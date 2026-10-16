@@ -1,30 +1,164 @@
 import { useState, useEffect } from 'react';
 import { InlineMath, BlockMath } from 'react-katex';
+import { supabase } from '../supabaseClient';
+
+const SECTION_STYLES = {
+  theory: "bg-slate-800/80 p-8 rounded-xl shadow-lg border border-slate-700/80 border-l-4 border-l-emerald-500 mb-8 scroll-mt-24",
+  problem_type: "bg-slate-900/90 p-8 rounded-xl shadow-lg border border-purple-900/40 border-l-4 border-l-purple-500 mb-8 scroll-mt-24",
+};
+
+function renderMathContent(content) {
+  if (!content) return null;
+
+  const parts = content.split(/(\$\$[\s\S]+?\$\$|\$[^$]+?\$)/g);
+
+  return parts.map((part, index) => {
+    if (part.startsWith('$$') && part.endsWith('$$')) {
+      const math = part.slice(2, -2).trim();
+      return (
+        <div
+          key={index}
+          className="my-4 p-4 bg-slate-950/70 rounded-lg border border-slate-800 text-emerald-300 overflow-x-auto shadow-inner"
+        >
+          <BlockMath math={math} />
+        </div>
+      );
+    }
+
+    if (part.startsWith('$') && part.endsWith('$')) {
+      const math = part.slice(1, -1).trim();
+      return (
+        <span key={index} className="text-slate-300 font-medium">
+          <InlineMath math={math} />
+        </span>
+      );
+    }
+
+    return <span key={index}>{part}</span>;
+  });
+}
 
 export default function Kinematics() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [activeSection, setActiveSection] = useState("theory-suvat");
+  const [activeSection, setActiveSection] = useState("");
+    const [moduleData, setModuleData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState(null);
 
+  // 1. Fetch module and its nested sections on mount
   useEffect(() => {
+    async function fetchKinematics() {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from('modules')
+        .select('*, sections(*)')
+        .eq('title', 'Kinematics')
+        .single();
+
+      if (error) {
+        console.error('Error fetching module:', error);
+        setFetchError(error);
+      } else if (data) {
+        if (data.sections) {
+          data.sections.sort((a, b) => a.order_index - b.order_index);
+        }
+        setModuleData(data);
+        if (data.sections && data.sections.length > 0) {
+          setActiveSection(`section-${data.sections[0].id}`);
+        }
+      }
+      setLoading(false);
+    }
+
+    fetchKinematics();
+  }, []);
+
+        // 2. Attach scroll-spy IntersectionObserver + bottom-of-page detector AFTER DOM renders
+  useEffect(() => {
+    if (loading || !moduleData) return;
+
+    const sectionElements = Array.from(document.querySelectorAll("section[id]"));
+    if (sectionElements.length === 0) return;
+
+    const visibleIds = new Set();
+
+    const updateActiveSection = () => {
+      const lastSection = sectionElements[sectionElements.length - 1];
+      const lastRect = lastSection.getBoundingClientRect();
+
+      // Check both document bottom AND if the last section's bottom is fully visible in the viewport
+      const isAtPageBottom =
+        Math.ceil(window.innerHeight + window.scrollY) >=
+        document.documentElement.scrollHeight - 20;
+      const isLastSectionFullyInView =
+        window.scrollY > 20 && lastRect.bottom <= window.innerHeight + 10;
+
+      if (isAtPageBottom || isLastSectionFullyInView) {
+        setActiveSection(lastSection.id);
+        return;
+      }
+
+      if (window.scrollY < 20) {
+        setActiveSection(sectionElements[0].id);
+        return;
+      }
+
+      // Highlight the topmost section currently inside our reading zone
+      const firstVisible = sectionElements.find((el) => visibleIds.has(el.id));
+      if (firstVisible) {
+        setActiveSection(firstVisible.id);
+      }
+    };
+
     const observer = new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
           if (entry.isIntersecting) {
-            setActiveSection(entry.target.id);
+            visibleIds.add(entry.target.id);
+          } else {
+            visibleIds.delete(entry.target.id);
           }
         });
+        updateActiveSection();
       },
-      { rootMargin: "-50% 0px -50% 0px" } 
+      { rootMargin: "-15% 0px -45% 0px" }
     );
 
-    const sections = document.querySelectorAll("section[id]");
-    sections.forEach((section) => observer.observe(section));
+    sectionElements.forEach((section) => observer.observe(section));
+    window.addEventListener("scroll", updateActiveSection, { passive: true });
 
     return () => {
-      sections.forEach((section) => observer.unobserve(section));
+      sectionElements.forEach((section) => observer.unobserve(section));
       observer.disconnect();
+      window.removeEventListener("scroll", updateActiveSection);
     };
-  }, []);
+  }, [loading, moduleData]);
+
+  // 3. Loading state UI
+  if (loading) {
+    return (
+      <div className="max-w-7xl mx-auto p-8 text-center text-slate-400">
+        Loading...
+      </div>
+    );
+  }
+
+    if (!moduleData) {
+    return (
+      <div className="max-w-7xl mx-auto p-8 text-center text-red-400">
+        <p className="text-xl font-bold mb-2">Module not found.</p>
+        {fetchError && (
+          <pre className="mt-4 p-4 bg-slate-800 text-left text-sm text-amber-300 rounded-lg overflow-x-auto">
+            {JSON.stringify(fetchError, null, 2)}
+          </pre>
+        )}
+      </div>
+    );
+  }
+
+  const sections = moduleData.sections || [];
+  const theorySections = sections.filter((s) => s.section_type === 'theory');
+  const problemSections = sections.filter((s) => s.section_type === 'problem_type');
 
   return (
     <div className="max-w-7xl mx-auto p-4 md:p-8 flex items-start scroll-smooth bg-slate-900 min-h-screen">
@@ -53,57 +187,49 @@ export default function Kinematics() {
             </h3>
             
             <ul className="space-y-3 text-sm font-medium">
-              <li>
-                <a 
-                  href="#theory-suvat" 
-                  className={`transition-colors block ${
-                    activeSection === 'theory-suvat' 
-                      ? 'text-emerald-400 font-bold' 
-                      : 'text-slate-400 hover:text-emerald-400'
-                  }`}
-                >
-                  1. SUVAT Theory
-                </a>
-              </li>
-              <li>
-                <a 
-                  href="#theory-graphs" 
-                  className={`transition-colors block ${
-                    activeSection === 'theory-graphs' 
-                      ? 'text-emerald-400 font-bold' 
-                      : 'text-slate-400 hover:text-emerald-400'
-                  }`}
-                >
-                  2. Motion Graphs
-                </a>
-              </li>
-              <li className="pt-4 mt-4 border-t border-slate-700">
-                <span className="text-purple-400 uppercase tracking-wider text-xs block mb-3">Problem Types</span>
-              </li>
-              <li>
-                <a 
-                  href="#problem-braking" 
-                  className={`transition-colors block ${
-                    activeSection === 'problem-braking' 
-                      ? 'text-purple-400 font-bold' 
-                      : 'text-slate-400 hover:text-purple-300'
-                  }`}
-                >
-                  Type 1: Braking Distance
-                </a>
-              </li>
-              <li>
-                <a 
-                  href="#problem-freefall" 
-                  className={`transition-colors block ${
-                    activeSection === 'problem-freefall' 
-                      ? 'text-purple-400 font-bold' 
-                      : 'text-slate-400 hover:text-purple-300'
-                  }`}
-                >
-                  Type 2: Vertical Freefall
-                </a>
-              </li>
+              {theorySections.map((section, index) => {
+                const sectionId = `section-${section.id}`;
+                return (
+                  <li key={section.id}>
+                    <a 
+                      href={`#${sectionId}`} 
+                      className={`transition-colors block ${
+                        activeSection === sectionId 
+                          ? 'text-emerald-400 font-bold' 
+                          : 'text-slate-400 hover:text-emerald-400'
+                      }`}
+                    >
+                      {index + 1}. {section.title}
+                    </a>
+                  </li>
+                );
+              })}
+
+              {problemSections.length > 0 && (
+                <li className="pt-4 mt-4 border-t border-slate-700">
+                  <span className="text-purple-400 uppercase tracking-wider text-xs block mb-3">
+                    Problem Types
+                  </span>
+                </li>
+              )}
+
+              {problemSections.map((section, index) => {
+                const sectionId = `section-${section.id}`;
+                return (
+                  <li key={section.id}>
+                    <a 
+                      href={`#${sectionId}`} 
+                      className={`transition-colors block ${
+                        activeSection === sectionId 
+                          ? 'text-purple-400 font-bold' 
+                          : 'text-slate-400 hover:text-purple-300'
+                      }`}
+                    >
+                      Type {index + 1}: {section.title}
+                    </a>
+                  </li>
+                );
+              })}
             </ul>
           </nav>
         </div>
@@ -136,76 +262,59 @@ export default function Kinematics() {
           THE MAIN CONTENT AREA
           ========================================= */}
       <main className="flex-1 min-w-0 transition-all duration-300">
-        
-        {/* PART 1: THEORY */}
-        <div className="mb-16">
-          <h1 className="text-4xl font-bold text-white mb-8 border-b border-slate-700 pb-4">
-            Topic A: Kinematics
-          </h1>
-          
-          <section id="theory-suvat" className="bg-slate-800 rounded-xl p-8 border border-slate-700 shadow-lg mb-8 pt-24 -mt-16">
-            <h2 className="text-2xl text-slate-200 mb-4">Constant Acceleration (SUVAT)</h2>
-            <div className="text-xl text-emerald-400 mb-6 bg-slate-900 p-4 rounded border border-slate-700 shadow-inner space-y-4">
-              <BlockMath math="v = u + at" />
-              <BlockMath math="s = ut + \frac{1}{2}at^2" />
-              <BlockMath math="v^2 = u^2 + 2as" />
-              <BlockMath math="s = \left(\frac{v + u}{2}\right)t" />
-            </div>
-            
-            <div className="aspect-video w-full rounded-lg overflow-hidden bg-black mb-6 border border-slate-700">
-              <iframe
-                className="w-full h-full"
-                src="https://www.youtube.com/embed/dQw4w9WgXcQ"
-                title="Theory Video"
-                allowFullScreen
-              ></iframe>
-            </div>
-          </section>
+        <h1 className="text-4xl font-bold text-white mb-8 border-b border-slate-700 pb-4">
+          {moduleData.title}
+        </h1>
 
-          <section id="theory-graphs" className="bg-slate-800 rounded-xl p-8 border border-slate-700 shadow-lg mb-8 pt-24 -mt-16 min-h-[400px]">
-             <h2 className="text-2xl text-slate-200 mb-4">Motion Graphs</h2>
-             <p className="text-slate-400 mb-4">
-               The gradient of a displacement-time graph is velocity (<InlineMath math="v = \frac{\Delta s}{\Delta t}" />).
-             </p>
-          </section>
-        </div>
+                        {sections.length === 0 && (
+          <div className="bg-slate-800/60 border border-slate-700 rounded-xl p-8 text-slate-400">
+            No sections found for this module yet. Make sure rows exist in the <code className="text-emerald-400">sections</code> table with <code className="text-emerald-400">module_id = {moduleData.id}</code> and that RLS read access is enabled on <code className="text-emerald-400">sections</code>.
+          </div>
+        )}
 
-        {/* PART 2: PROBLEMS */}
-        <div>
-          <h2 className="text-3xl font-bold text-white mb-8 border-b border-slate-700 pb-4">
-            How To Use This
-          </h2>
+        {sections.map((section) => {
+          const sectionId = `section-${section.id}`;
 
-          <section id="problem-braking" className="bg-slate-900 rounded-xl p-8 border border-purple-900/50 mb-8 pt-24 -mt-16">
-            <div className="flex justify-between items-start mb-4">
-              <h3 className="text-xl text-purple-400 font-semibold">Type 1: Braking Distance</h3>
-              <a href="#theory-suvat" className="text-slate-500 hover:text-emerald-400 transition-colors text-sm font-semibold">
-                ↑ Review Theory
-              </a>
-            </div>
-            
-            <p className="text-slate-300 mb-4 leading-relaxed">
-              A car traveling at <InlineMath math="15 \text{ ms}^{-1}" /> hits the brakes and accelerates at <InlineMath math="-2 \text{ ms}^{-2}" /> until it stops. 
-              How long does it take to stop?
-            </p>
-            <div className="text-purple-300 space-y-4 bg-slate-950 p-6 rounded-lg border border-slate-800">
-              <BlockMath math="u = 15, \quad v = 0, \quad a = -2" />
-              <BlockMath math="0 = 15 + (-2)t" />
-              <BlockMath math="t = 7.5 \text{ s}" />
-            </div>
-          </section>
-          
-          <section id="problem-freefall" className="bg-slate-900 rounded-xl p-8 border border-purple-900/50 mb-8 pt-24 -mt-16 min-h-[400px]">
-            <div className="flex justify-between items-start mb-4">
-              <h3 className="text-xl text-purple-400 font-semibold">Type 2: Vertical Freefall</h3>
-              <a href="#theory-suvat" className="text-slate-500 hover:text-emerald-400 transition-colors text-sm font-semibold">
-                ↑ Review Theory
-              </a>
-            </div>
-            <p className="text-slate-300 mb-4">A ball is dropped from a <InlineMath math="50 \text{ m}" /> cliff...</p>
-          </section>
-          
-        </div>
+          return (
+            <section
+              key={section.id}
+              id={sectionId}
+              className={SECTION_STYLES[section.section_type]}
+            >
+              {section.section_type === 'theory' && (
+                <>
+                  <h2 className="text-2xl font-semibold text-white mb-4">
+                    {section.title}
+                  </h2>
+                  <div className="text-slate-300 leading-relaxed whitespace-pre-line">
+                    {renderMathContent(section.content)}
+                  </div>
+                </>
+              )}
+
+              {section.section_type === 'problem_type' && (
+                <>
+                  <div className="flex justify-between items-start mb-4">
+                    <h3 className="text-xl text-purple-400 font-semibold">
+                      {section.title}
+                    </h3>
+                    {theorySections.length > 0 && (
+                      <a
+                        href={`#section-${theorySections[0].id}`}
+                        className="text-slate-400 hover:text-emerald-400 transition-colors text-sm font-semibold"
+                      >
+                        ↑ Review Theory
+                      </a>
+                    )}
+                  </div>
+                  <div className="text-slate-300 leading-relaxed whitespace-pre-line">
+                    {renderMathContent(section.content)}
+                  </div>
+                </>
+              )}
+            </section>
+          );
+        })}
       </main>
     </div>
   );
